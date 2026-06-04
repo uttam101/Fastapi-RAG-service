@@ -1,11 +1,40 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, HTTPException, status, Request
+from fastapi.responses import JSONResponse
 from service.data_ingest import load_documents
 from pathlib import Path
 from dotenv import load_dotenv
 from utils.hash_registry import check_upload_status, get_bytes_hash, register_uploaded_file
 from service.query_data import extract_similar_content
+from utils.logging_config import get_logger
+from utils.exceptions import ExternalServiceError, ServiceError, ValidationError
+from pydantic import BaseModel
+
+class Question(BaseModel):
+    question: str
+
 load_dotenv()  # Load environment variables from .env file
 app = FastAPI()
+logger = get_logger("main")
+
+
+@app.exception_handler(ServiceError)
+async def service_exception_handler(request: Request, exc: ServiceError):
+    if isinstance(exc, ValidationError):
+        logger.warning("Client validation failure: %s", exc.message)
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+
+    if isinstance(exc, ExternalServiceError):
+        logger.exception("External service failure: %s", exc.message)
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+
+    logger.error("ServiceError: %s", exc.message)
+    return JSONResponse(status_code=getattr(exc, "status_code", 500), content={"detail": exc.message})
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled exception: %s", exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 # Absolute base path: dynamic directory where this app file lives + /data
 DOWNLOADS_DIR = Path(__file__).resolve().parent / "data"
@@ -73,15 +102,27 @@ async def upload_file(file: UploadFile = File(...)):
         return {"filename": filename, "message": "File uploaded successfully"}
 
     except HTTPException as http_exc:
-        # Prevent the general Exception catch-all from changing 400 Bad Request into a 500 error
+        # Preserve HTTPExceptions raised intentionally
         raise http_exc
+    except ServiceError as service_exc:
+        # Allow service-layer error handlers to return proper status codes
+        raise service_exc
     except Exception as e:
-        print(f"Error uploading file: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        logger.exception("Error uploading file: %s", e)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="File upload failed")
+
+
+MAX_QUESTION_LENGTH = 1000
 
 
 @app.post("/ask-question")
-def ask_question(question: str):
-    
-    answer = extract_similar_content(question)
-    return {"question": question, "answer": answer}
+async def ask_question(question: Question):
+
+    text = (question.question or "").strip()
+    if not text:
+        raise ValidationError("Question must be a non-empty string")
+    if len(text) > MAX_QUESTION_LENGTH:
+        raise ValidationError(f"Question too long; max {MAX_QUESTION_LENGTH} characters allowed")
+
+    answer = extract_similar_content(text)
+    return {"question": text, "answer": answer}

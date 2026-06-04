@@ -2,9 +2,13 @@ from google import genai
 from google.genai import types, errors
 import os
 
+from utils.logging_config import get_logger
+from utils.exceptions import ExternalServiceError
+
+logger = get_logger("utils.llm_calls")
+
 
 def ask_question(context, question):
-
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     prompt = f"Context:\n{context}\n\nQuestion:\n{question}"
 
@@ -21,17 +25,17 @@ def ask_question(context, question):
         return response.text
 
     except errors.ClientError as e:
-        print(f" Client Error (Fix your request/setup): Status Code {e.code} - {e.message}")
-        return "Sorry, there was an issue processing your request. Please check your input and try again."
-    
+        logger.exception("LLM client error: %s", e)
+        raise ExternalServiceError("LLM client error") from e
+
     except errors.ServerError as e:
-        print(f" Server Error (Google side is down): Status Code {e.code} - {e.message}")
-        return "Sorry, there was a server error. Please try again later."
+        logger.exception("LLM server error: %s", e)
+        raise ExternalServiceError("LLM server error") from e
 
     except errors.APIError as e:
-        print(f" API Error: {e}")
-        return "Sorry, there was an API error. Please try again later."
+        logger.exception("LLM API error: %s", e)
+        raise ExternalServiceError("LLM API error") from e
 
     except Exception as e:
-        print(f" Unexpected system error occurred: {e}")
-        return "Sorry, an unexpected error occurred. Please try again later."
+        logger.exception("Unexpected system error in LLM call: %s", e)
+        raise ExternalServiceError("Unexpected LLM error") from e
