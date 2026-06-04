@@ -1,9 +1,9 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, status
-from script.data_ingest import load_documents
+from service.data_ingest import load_documents
 from pathlib import Path
 from dotenv import load_dotenv
 from utils.hash_registry import check_upload_status, get_bytes_hash, register_uploaded_file
-
+from service.query_data import extract_similar_content
 load_dotenv()  # Load environment variables from .env file
 app = FastAPI()
 
@@ -78,3 +78,10 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         print(f"Error uploading file: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@app.post("/ask-question")
+def ask_question(question: str):
+    
+    answer = extract_similar_content(question)
+    return {"question": question, "answer": answer}
