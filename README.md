@@ -1,12 +1,12 @@
 # Fastapi-RAG-service
-FastAPI-based document ingestion service for a Retrieval-Augmented Generation (RAG) pipeline. The current stage supports file upload, local persistence, PDF loading, chunking, Qdrant storage for embeddings, and hash-based deduplication to prevent duplicate embeddings.
+FastAPI-based document ingestion and RAG service with PDF ingestion, vector storage, and question-answering over ingested content.
 
 ## Current Status
 - `GET /health` is available for basic service checks.
-- `POST /upload-file` accepts uploads, validates the extension, saves the file under `data/`, and forwards PDFs into the ingestion pipeline.
-- `script/data_ingest.py` currently handles PDF loading, document chunking, and vector store creation.
-- `utils/hash_registry.py` handles upload hashing, duplicate detection, and registry updates.
-- The RAG answer-generation API is not implemented yet.
+- `POST /upload-file` accepts files, validates allowed extensions, deduplicates by content hash, stores uploads under `data/`, and ingests PDFs into Qdrant.
+- `POST /ask-question` accepts JSON with a `question` field, performs similarity search against Qdrant, and forwards context to the LLM.
+- Global exception handling is implemented with structured `ServiceError` responses.
+- File logging is enabled with daily rotation and 7-day retention under `logs/app.log`.
 
 ## Tech Stack
 - FastAPI
@@ -14,12 +14,13 @@ FastAPI-based document ingestion service for a Retrieval-Augmented Generation (R
 - LangChain community loaders and splitters
 - Hugging Face embeddings
 - Qdrant vector store
+- Google Gemini `genai` client
 
 ## Quick Start
 1. Create and activate a virtual environment.
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 ```
 
@@ -43,7 +44,7 @@ curl http://127.0.0.1:8000/health
 
 ## API Endpoints
 ### `GET /health`
-Basic service status response.
+Returns service status.
 
 Example response:
 
@@ -54,58 +55,85 @@ Example response:
 ```
 
 ### `POST /upload-file`
-Uploads a file, stores it locally, and starts ingestion for supported PDFs.
+Upload and ingest supported files.
 
 Form field:
-- `file`: uploaded file
+- `file`: the uploaded file
 
-Current behavior:
-- Validates the file extension against the allowed list.
-- Saves the file into a type-based subdirectory under `data/`.
-- Calls `load_documents(file_path, extension)` after a successful save.
+Behavior:
+- Validates file extension against allowed types.
+- Rejects duplicate content by hash.
+- Saves the file under `data/<extension>/`.
+- Validates write success before ingestion.
+- Sends PDFs to the ingestion pipeline.
+- Returns `409` for duplicate uploads and `400` for invalid extensions.
 
-### Deduplication behavior
-- Uploaded PDF content is hashed before ingestion.
-- Previously ingested files are tracked in `data/file_hashes.json`.
-- If the same file content is uploaded again, ingestion is skipped and duplicate embeddings are not created.
+### `POST /ask-question`
+Ask a question against ingested content.
 
-## Ingestion Flow
-1. Receive the uploaded file in `main.py`.
-2. Persist it on disk under `data/<extension>/`.
-3. Pass the saved path to `script/data_ingest.py`.
-4. Load the document with `PyMuPDFLoader` for PDFs.
-5. Split the document into chunks.
-6. Store the chunks in Qdrant using `sentence-transformers/all-MiniLM-L6-v2` embeddings.
-7. Save the file hash so future uploads of the same content are skipped.
+Request body:
+
+```json
+{
+  "question": "What is Techdome?"
+}
+```
+
+Behavior:
+- Validates the request schema and ensures the question is non-empty.
+- Enforces a maximum question length.
+- Performs similarity search in Qdrant.
+- Calls the LLM with retrieved context.
+- Returns structured errors for validation and external-service failures.
+
+## Error Handling
+- Validation errors return `4xx` with a JSON `detail` message.
+- External service failures return `502` with a JSON `detail` message.
+- Unexpected errors return `500` with a generic `Internal server error` response.
+- The application logs both warnings and errors to `logs/app.log`.
+
+## Logging
+- Logs are written to stdout and `logs/app.log`.
+- `logs/app.log` rotates at midnight.
+- Daily retention is configured for 7 days.
+- `logs/` is ignored by git in `.gitignore`.
 
 ## Project Structure
 ```
 .
 ├── main.py
-├── script/
-│   └── data_ingest.py
+├── service/
+│   ├── data_ingest.py
+│   └── query_data.py
 ├── utils/
 │   ├── __init__.py
-│   └── hash_registry.py
+│   ├── exceptions.py
+│   ├── hash_registry.py
+│   ├── llm_calls.py
+│   └── logging_config.py
 ├── data/
+│   ├── csv/
+│   ├── pdf/
 │   └── file_hashes.json
+├── logs/
+│   └── app.log  # generated at runtime
 ├── requirements.txt
+├── .gitignore
 └── README.md
 ```
 
 ## Notes
-- The ingestion path currently processes PDFs only in `load_documents`.
-- `text/plain` and `text/csv` are accepted by the upload endpoint, but their downstream loaders are not implemented yet.
-- Qdrant must be running at `http://localhost:6333` for vector storage to work, unless overridden with `QDRANT_DB_URL`.
-- You can override the collection name and embedding model with `QDRANT_COLLECTION_NAME` and `EMBEDDING_MODEL_NAME`.
-- Duplicate detection lives in `utils/hash_registry.py` so ingestion code stays focused on document processing.
+- Only `.pdf`, `.txt`, and `.csv` uploads are accepted; PDF ingestion is implemented, while text/CSV ingestion is currently not fully supported.
+- `ask-question` uses a Pydantic model for request validation and relies on service-layer exception handling.
+- Qdrant should be available at `http://localhost:6333`, unless overridden by `QDRANT_DB_URL`.
+- The embedding model and collection name can be customized via `EMBEDDING_MODEL_NAME` and `QDRANT_COLLECTION_NAME`.
 
 ## Development Roadmap
-- Add loaders for text and CSV files.
-- Add MIME/content validation.
-- Add error handling and structured API responses.
-- Add retrieval and answer-generation endpoints.
-- Add tests and CI.
+- Add text and CSV ingestion loaders.
+- Add stronger content validation and request size limits.
+- Add retries/backoff for Qdrant and LLM calls.
+- Add authorization and rate limiting for APIs.
+- Add automated tests and CI.
 
 ## License
 No license specified yet.
