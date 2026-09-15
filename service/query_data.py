@@ -12,6 +12,7 @@ QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "my_collection")
 EMBEDDING_MODEL_NAME = os.getenv(
     "EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
 )
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.5"))
 
 logger = get_logger("service.query_data")
 
@@ -29,13 +30,21 @@ def extract_similar_content(query: str):
             url=QDRANT_URL,
         )
 
-        results = vector_store.similarity_search(query, k=3)
+        results_with_scores = vector_store.similarity_search_with_relevance_scores(query, k=3)
 
-        if not results:
-            logger.warning("Query executed, but no relevant documents found.")
+        filtered = [(doc, score) for doc, score in results_with_scores if score >= SIMILARITY_THRESHOLD]
+
+        if not filtered:
+            logger.warning(
+                "Query executed but no documents met the similarity threshold %.2f. "
+                "Top scores: %s",
+                SIMILARITY_THRESHOLD,
+                [round(s, 3) for _, s in results_with_scores],
+            )
             return "No relevant information found for your query."
 
-        for doc in results:
+        for doc, score in filtered:
+            logger.debug("Including document with similarity score %.3f", score)
             context += doc.page_content + "\n---\n"
 
         # generate final answer using LLM helper

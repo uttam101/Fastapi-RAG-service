@@ -82,9 +82,33 @@ Request body:
 Behavior:
 - Validates the request schema and ensures the question is non-empty.
 - Enforces a maximum question length.
-- Performs similarity search in Qdrant.
+- Performs similarity search in Qdrant with relevance scoring (see below).
 - Calls the LLM with retrieved context.
 - Returns structured errors for validation and external-service failures.
+
+#### Similarity Score Threshold
+
+When a question is received, the system does not blindly return the top-k documents. Instead it uses a scored retrieval pipeline:
+
+1. **Embed the query** — the question is converted to a vector using the configured HuggingFace embedding model (`all-MiniLM-L6-v2` by default).
+2. **Retrieve top-k with scores** — `similarity_search_with_relevance_scores(query, k=3)` is called against Qdrant. This returns up to 3 `(document, score)` pairs where each score is a cosine similarity in the range `[0.0, 1.0]`. A score of `1.0` means the document is identical to the query; `0.0` means completely unrelated.
+3. **Filter by threshold** — every `(doc, score)` pair is checked against `SIMILARITY_THRESHOLD` (default `0.5`):
+   - `score >= threshold` → document is included in the context sent to the LLM.
+   - `score < threshold` → document is silently dropped.
+4. **Guard on empty context** — if all retrieved documents fall below the threshold, the service returns `"No relevant information found for your query."` without calling the LLM at all. The actual top scores are logged as a warning to help with threshold tuning.
+5. **LLM call** — only if at least one document passes the filter is the LLM invoked with the filtered context.
+
+This prevents the LLM from hallucinating answers grounded in loosely-related or irrelevant documents.
+
+**Tuning the threshold** — controlled by the `SIMILARITY_THRESHOLD` environment variable:
+
+| Value | Effect |
+|-------|--------|
+| `0.3` | Very permissive — nearly all results pass; risk of noisy context |
+| `0.5` | Default — balanced precision/recall for `all-MiniLM-L6-v2` |
+| `0.7` | Strict — only high-confidence matches pass; may return "no relevant info" more often |
+
+Raise the threshold if the LLM is producing vague or off-topic answers. Lower it if the system is too often returning "no relevant information" for questions that should have answers.
 
 ## Error Handling
 - Validation errors return `4xx` with a JSON `detail` message.
@@ -127,6 +151,7 @@ Behavior:
 - `ask-question` uses a Pydantic model for request validation and relies on service-layer exception handling.
 - Qdrant should be available at `http://localhost:6333`, unless overridden by `QDRANT_DB_URL`.
 - The embedding model and collection name can be customized via `EMBEDDING_MODEL_NAME` and `QDRANT_COLLECTION_NAME`.
+- The similarity score threshold defaults to `0.5` and can be overridden via `SIMILARITY_THRESHOLD` in `.env`.
 
 ## Development Roadmap
 - Add text and CSV ingestion loaders.
