@@ -1,8 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, status, Request
 from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from service.data_ingest import load_documents
 from pathlib import Path
-from dotenv import load_dotenv
 from utils.hash_registry import check_upload_status, get_bytes_hash, register_uploaded_file
 from service.query_data import extract_similar_content
 from utils.logging_config import get_logger
@@ -12,7 +15,6 @@ from pydantic import BaseModel
 class Question(BaseModel):
     question: str
 
-load_dotenv()  # Load environment variables from .env file
 app = FastAPI()
 logger = get_logger("main")
 
